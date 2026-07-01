@@ -1,0 +1,132 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vexhost}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vexhost}
+      POSTGRES_DB: ${POSTGRES_DB:-vexhost}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vexhost} -d ${POSTGRES_DB:-vexhost}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  runtime-manager:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.runtime-manager
+    restart: unless-stopped
+    command: uvicorn app.runtime_manager:app --host 0.0.0.0 --port 8010
+    environment:
+      DEPLOY_ROOT: /data/deployments
+      RUNTIME_HOST_DEPLOY_ROOT: /var/lib/docker/volumes/vexhost_deploy_data/_data
+      RUNTIME_NETWORK: vexhost_default
+      RUNTIME_MEMORY_MB: 384
+      RUNTIME_CPUS: "0.75"
+    volumes:
+      - deploy_data:/data/deployments
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(''http://127.0.0.1:8010/healthz'', timeout=3).read()"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vexhost}:${POSTGRES_PASSWORD:-vexhost}@db:5432/${POSTGRES_DB:-vexhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://host.vexory.xyz}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+      DASHBOARD_URL: ${DASHBOARD_URL:-https://host.vexory.xyz/?view=dashboard}
+      DEPLOY_ROOT: /data/deployments
+      RUNTIME_HOST_DEPLOY_ROOT: /var/lib/docker/volumes/vexhost_deploy_data/_data
+      RUNTIME_NETWORK: vexhost_default
+      RUNTIME_MANAGER_URL: http://runtime-manager:8010
+    volumes:
+      - deploy_data:/data/deployments
+    depends_on:
+      db:
+        condition: service_healthy
+      runtime-manager:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - vexhost-api
+    healthcheck:
+      test: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(''http://127.0.0.1:8000/healthz'', timeout=3).read()"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vexhost}:${POSTGRES_PASSWORD:-vexhost}@db:5432/${POSTGRES_DB:-vexhost}
+      DEPLOY_ROOT: /data/deployments
+    volumes:
+      - deploy_data:/data/deployments
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  bot:
+    build: ./backend
+    restart: unless-stopped
+    command: python -m app.bot
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vexhost}:${POSTGRES_PASSWORD:-vexhost}@db:5432/${POSTGRES_DB:-vexhost}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+      DASHBOARD_URL: ${DASHBOARD_URL:-https://host.vexory.xyz/?view=dashboard}
+      DEPLOY_ROOT: /data/deployments
+      RUNTIME_HOST_DEPLOY_ROOT: /var/lib/docker/volumes/vexhost_deploy_data/_data
+      RUNTIME_NETWORK: vexhost_default
+      RUNTIME_MANAGER_URL: http://runtime-manager:8010
+    volumes:
+      - deploy_data:/data/deployments
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+      runtime-manager:
+        condition: service_healthy
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    volumes:
+      - deploy_data:/usr/share/nginx/html/p:ro
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      default:
+      caddy-public:
+        aliases:
+          - vexhost-web
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  db_data:
+  deploy_data:
+
+networks:
+  caddy-public:
+    external: true
+    name: hosting_default
