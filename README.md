@@ -34,6 +34,12 @@ VexHost is a Telegram-first hosting platform for builders who want to publish pr
 
 Live beta: [https://host.vexory.xyz/](https://host.vexory.xyz/)
 
+## Screenshots
+
+The README visuals are refreshed from the current beta UI.
+
+![VexHost environment variables manager](assets/env-manager-preview.png)
+
 ## Highlights
 
 - Deploy static sites, Node.js apps, Python apps, APIs, Telegram bots, and Mini Apps.
