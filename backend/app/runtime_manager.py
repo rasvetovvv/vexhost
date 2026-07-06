@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import subprocess
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="VexHost Runtime Manager", version="1.0.0")
@@ -21,6 +22,7 @@ RUNTIME_HOST_DEPLOY_ROOT = os.environ.get("RUNTIME_HOST_DEPLOY_ROOT", "/var/lib/
 RUNTIME_NETWORK = os.environ.get("RUNTIME_NETWORK", "vexhost_default")
 RUNTIME_MEMORY_MB = int(os.environ.get("RUNTIME_MEMORY_MB", "384"))
 RUNTIME_CPUS = os.environ.get("RUNTIME_CPUS", "0.75")
+RUNTIME_MANAGER_TOKEN = os.environ.get("RUNTIME_MANAGER_TOKEN", "")
 
 RUNTIME_IMAGES = {
     "python_app": "python:3.11-slim",
@@ -78,6 +80,18 @@ def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
 
 
+def require_runtime_token(request: Request, x_runtime_manager_token: str = Header(default="")) -> None:
+    # /healthz remains unauthenticated for Docker healthchecks. Everything that
+    # can inspect logs, exec commands, or mutate containers requires a shared
+    # backend-only token so user runtime containers cannot control the manager.
+    if request.url.path == "/healthz":
+        return
+    if not RUNTIME_MANAGER_TOKEN:
+        raise HTTPException(status_code=503, detail="Runtime manager token is not configured")
+    if not secrets.compare_digest(x_runtime_manager_token, RUNTIME_MANAGER_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid runtime manager token")
+
+
 def _host_workspace(project: ProjectRuntime) -> str:
     return f"{RUNTIME_HOST_DEPLOY_ROOT}/.workspaces/{project.slug}"
 
@@ -88,7 +102,7 @@ def healthz() -> dict:
     return {"ok": ok.returncode == 0, "docker": ok.stdout.strip() if ok.returncode == 0 else "unavailable"}
 
 
-@app.post("/runtime/start")
+@app.post("/runtime/start", dependencies=[Depends(require_runtime_token)])
 def runtime_start(project: ProjectRuntime) -> dict:
     if project.type not in RUNTIME_IMAGES:
         raise HTTPException(status_code=422, detail="Unsupported runtime type")
@@ -112,21 +126,21 @@ def runtime_start(project: ProjectRuntime) -> dict:
     return {"ok": proc.returncode == 0, "container": name, "output": proc.stdout[-12000:], "exit_code": proc.returncode}
 
 
-@app.post("/runtime/stop")
+@app.post("/runtime/stop", dependencies=[Depends(require_runtime_token)])
 def runtime_stop(payload: NamePayload) -> dict:
     name = _validate_name(payload.name)
     proc = _run(["docker", "rm", "-f", name], timeout=30)
     return {"ok": proc.returncode == 0, "output": proc.stdout[-4000:], "exit_code": proc.returncode}
 
 
-@app.post("/runtime/start-existing")
+@app.post("/runtime/start-existing", dependencies=[Depends(require_runtime_token)])
 def runtime_start_existing(payload: NamePayload) -> dict:
     name = _validate_name(payload.name)
     proc = _run(["docker", "start", name], timeout=60)
     return {"ok": proc.returncode == 0, "output": proc.stdout[-4000:], "exit_code": proc.returncode}
 
 
-@app.post("/runtime/policy")
+@app.post("/runtime/policy", dependencies=[Depends(require_runtime_token)])
 def runtime_policy(payload: PolicyPayload) -> dict:
     name = _validate_name(payload.name)
     if payload.policy not in RESTART_POLICY_MAP:
@@ -135,7 +149,7 @@ def runtime_policy(payload: PolicyPayload) -> dict:
     return {"ok": proc.returncode == 0, "output": proc.stdout[-4000:], "exit_code": proc.returncode}
 
 
-@app.get("/runtime/inspect/{name}")
+@app.get("/runtime/inspect/{name}", dependencies=[Depends(require_runtime_token)])
 def runtime_inspect(name: str) -> dict:
     name = _validate_name(name)
     fmt = "{{.State.Status}}|{{.State.Running}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.RestartCount}}|{{.State.Error}}"
@@ -156,7 +170,7 @@ def runtime_inspect(name: str) -> dict:
     }
 
 
-@app.get("/runtime/stats/{name}")
+@app.get("/runtime/stats/{name}", dependencies=[Depends(require_runtime_token)])
 def runtime_stats(name: str) -> dict:
     name = _validate_name(name)
     proc = _run(["docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}", name], timeout=20)
@@ -184,7 +198,7 @@ def runtime_stats(name: str) -> dict:
     }
 
 
-@app.get("/runtime/logs/{name}")
+@app.get("/runtime/logs/{name}", dependencies=[Depends(require_runtime_token)])
 def runtime_logs(name: str, lines: int = 160) -> dict:
     name = _validate_name(name)
     lines = max(1, min(int(lines or 160), 1000))
@@ -192,7 +206,7 @@ def runtime_logs(name: str, lines: int = 160) -> dict:
     return {"ok": proc.returncode == 0, "logs": proc.stdout[-20000:], "exit_code": proc.returncode}
 
 
-@app.post("/runtime/exec")
+@app.post("/runtime/exec", dependencies=[Depends(require_runtime_token)])
 def runtime_exec(payload: ExecPayload) -> dict:
     name = _validate_name(payload.name)
     command = payload.command.strip()

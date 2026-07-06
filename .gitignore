@@ -33,6 +33,8 @@ tmp/
 
 # Local tooling
 .playwright-mcp/
+.impeccable/
+design/
 .vscode/
 .idea/
 

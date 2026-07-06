@@ -28,7 +28,8 @@ from .config import settings
 from .db import SessionLocal, db_ping, init_db
 from .deployer import delete_static, validate_build_options, validate_public_repo, DeployValidationError, _copytree_clean
 from .models import Deployment, Project, User, WaitlistRequest
-from .schemas import AdminSummaryOut, DashboardOut, DeployIn, DeployOut, DeploymentOut, LoginIn, LoginOut, ProjectIn, ProjectOut, UserOut, WaitlistIn, WaitlistOut
+from .schemas import AdminSummaryOut, DashboardOut, DeployIn, DeployOut, DeploymentOut, LoginIn, LoginOut, ProjectIn, ProjectOut, UserOut, WaitlistIn, WaitlistOut, EnvVar, EnvVarsIn, EnvVarsOut
+
 
 
 DEPLOY_ROOT = Path(os.environ.get('DEPLOY_ROOT', '/data/deployments'))
@@ -81,6 +82,15 @@ app.add_middleware(
 )
 
 
+@app.middleware('http')
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    if not request.url.path.startswith('/api/runtime-proxy'):
+        response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    return response
+
+
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get('x-forwarded-for', '')
     return (forwarded.split(',')[0].strip() or (request.client.host if request.client else ''))
@@ -99,9 +109,34 @@ def _slugify(value: str) -> str:
 
 
 
+# Per-process fallback: web sessions survive only until restart when neither
+# AUTH_SECRET nor the bot token is configured, but tokens are never signed
+# with a guessable default (the old fallback was the checked-in database URL).
+_EPHEMERAL_SECRET = secrets.token_hex(32)
+
+
 def _auth_secret() -> bytes:
-    raw = settings.telegram_bot_token or settings.database_url
+    if not settings.auth_secret and os.environ.get('ENV', '').lower() in {'prod', 'production'}:
+        raise RuntimeError('AUTH_SECRET is required in production')
+    raw = settings.auth_secret or settings.telegram_bot_token or _EPHEMERAL_SECRET
     return hashlib.sha256(('vexhost-auth:' + raw).encode()).digest()
+
+
+# Sliding-window rate limiter for unauthenticated endpoints (login, waitlist).
+_RATE_BUCKETS: dict[str, list[float]] = {}
+
+
+def _rate_limit(key: str, limit: int, window_seconds: int) -> None:
+    now = time()
+    if len(_RATE_BUCKETS) > 10_000:
+        for k in [k for k, v in _RATE_BUCKETS.items() if not v or now - v[-1] > window_seconds]:
+            _RATE_BUCKETS.pop(k, None)
+    bucket = [t for t in _RATE_BUCKETS.get(key, []) if now - t < window_seconds]
+    if len(bucket) >= limit:
+        _RATE_BUCKETS[key] = bucket
+        raise HTTPException(status_code=429, detail='Too many attempts. Try again later.')
+    bucket.append(now)
+    _RATE_BUCKETS[key] = bucket
 
 
 def _password_hash(password: str) -> str:
@@ -124,14 +159,20 @@ def _make_login_username(tg: dict) -> str:
     return f'vex_{base}'
 
 
+def _password_fingerprint(user: User) -> str:
+    return hashlib.sha256(('vexhost-pw:' + (user.password_hash or '')).encode()).hexdigest()[:12]
+
+
 def _issue_token(user: User) -> str:
-    payload = {'uid': user.id, 'ts': int(time())}
+    # 'ph' binds the token to the current password hash, so a password reset
+    # (e.g. by an admin after a compromise) invalidates existing sessions.
+    payload = {'uid': user.id, 'ts': int(time()), 'ph': _password_fingerprint(user)}
     raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip('=')
     sig = hmac.new(_auth_secret(), raw.encode(), hashlib.sha256).hexdigest()
     return f'{raw}.{sig}'
 
 
-def _read_token(token: str) -> int | None:
+def _read_token(token: str) -> dict | None:
     try:
         raw, sig = token.split('.', 1)
         calc = hmac.new(_auth_secret(), raw.encode(), hashlib.sha256).hexdigest()
@@ -141,7 +182,7 @@ def _read_token(token: str) -> int | None:
         payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
         if time() - int(payload.get('ts', 0)) > 86400 * 30:
             return None
-        return int(payload['uid'])
+        return {'uid': int(payload['uid']), 'ph': str(payload.get('ph') or '')}
     except Exception:
         return None
 
@@ -218,11 +259,11 @@ async def _ensure_credentials(session, user: User, tg: dict | None = None) -> tu
 
 async def current_user(x_telegram_init_data: str = Header(default=''), authorization: str = Header(default='')) -> User:
     if authorization.lower().startswith('bearer '):
-        uid = _read_token(authorization.split(' ', 1)[1].strip())
-        if uid:
+        claims = _read_token(authorization.split(' ', 1)[1].strip())
+        if claims:
             async with SessionLocal() as session:
-                user = await session.scalar(select(User).where(User.id == uid))
-                if user:
+                user = await session.scalar(select(User).where(User.id == claims['uid']))
+                if user and hmac.compare_digest(claims['ph'], _password_fingerprint(user)):
                     if user.is_suspended:
                         raise HTTPException(status_code=403, detail='Account is suspended. Contact support.')
                     return user
@@ -289,80 +330,20 @@ def project_out(item: Project, last_deployment_id: int | None = None) -> Project
     )
 
 
-def _run(cmd: list[str], cwd: Path, log: list[str], timeout: int = 180) -> None:
-    log.append(f'$ {" ".join(cmd)}')
-    proc = subprocess.run(cmd, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-    if proc.stdout:
-        log.append(proc.stdout[-6000:])
-    if proc.returncode != 0:
-        raise RuntimeError(f'Command failed with exit code {proc.returncode}: {" ".join(cmd)}')
-
-
-def _copytree_clean(src: Path, dst: Path) -> None:
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.mkdir(parents=True, exist_ok=True)
-    for item in src.iterdir():
-        if item.name in {'.git', 'node_modules'}:
-            continue
-        target = dst / item.name
-        if item.is_dir():
-            shutil.copytree(item, target, ignore=shutil.ignore_patterns('.git', 'node_modules'))
-        else:
-            shutil.copy2(item, target)
-
-
-def _deploy_static(repo_url: str, slug: str, build_command: str | None, output_dir: str | None) -> tuple[str, str]:
-    repo_url = _validate_public_repo(repo_url)
-    cmd = (build_command or 'auto').strip()
-    out = (output_dir or 'auto').strip().strip('/') or 'auto'
-    if cmd not in ALLOWED_BUILD_COMMANDS:
-        raise HTTPException(status_code=422, detail='Allowed build commands: auto, none, npm install && npm run build, npm ci && npm run build, npm run build.')
-    if out != 'auto' and (out.startswith('.') or '..' in Path(out).parts):
-        raise HTTPException(status_code=422, detail='Invalid output directory.')
-    log: list[str] = ['VexHost Stage 3 static deploy started.', f'Repo: {repo_url}', f'Build: {cmd}', f'Output: {out}']
-    with tempfile.TemporaryDirectory(prefix='vexhost-build-') as tmp:
-        work = Path(tmp) / 'repo'
-        _run(['git', 'clone', '--depth', '1', repo_url, str(work)], Path(tmp), log, timeout=120)
-        package_json = work / 'package.json'
-        if cmd == 'auto':
-            if package_json.exists():
-                lock = work / 'package-lock.json'
-                _run(['npm', 'ci' if lock.exists() else 'install'], work, log, timeout=240)
-                _run(['npm', 'run', 'build'], work, log, timeout=240)
-            else:
-                log.append('No package.json found. Publishing repository files as static site.')
-        elif cmd in {'', 'none'}:
-            log.append('Build skipped by user.')
-        elif cmd == 'npm install && npm run build':
-            _run(['npm', 'install'], work, log, timeout=240)
-            _run(['npm', 'run', 'build'], work, log, timeout=240)
-        elif cmd == 'npm ci && npm run build':
-            _run(['npm', 'ci'], work, log, timeout=240)
-            _run(['npm', 'run', 'build'], work, log, timeout=240)
-        elif cmd == 'npm run build':
-            _run(['npm', 'run', 'build'], work, log, timeout=240)
-
-        if out == 'auto':
-            candidates = ['dist', 'build', 'out', 'public'] if package_json.exists() else ['.']
-            output_path = next((work / c for c in candidates if (work / c).exists()), None)
-        else:
-            output_path = work / out
-        if not output_path or not output_path.exists() or not output_path.is_dir():
-            raise RuntimeError(f'Output directory not found: {out}')
-        index = output_path / 'index.html'
-        if not index.exists():
-            log.append('Warning: output directory has no index.html. Nginx directory listing is disabled, so root may return 403.')
-        target = DEPLOY_ROOT / slug
-        _copytree_clean(output_path, target)
-        log.append(f'Published to /p/{slug}/')
-    return f'https://host.vexory.xyz/p/{slug}/', '\n'.join(log)[-12000:]
-
-
 @app.get('/healthz')
 async def healthz() -> dict:
     await db_ping()
     return {'ok': True, 'service': 'vexhost-api'}
+
+
+@app.get('/api/health')
+async def api_health() -> dict:
+    return await healthz()
+
+
+@app.get('/api/auth/me', response_model=UserOut)
+async def auth_me(user: User = Depends(current_user)) -> UserOut:
+    return UserOut(telegram_id=user.telegram_id, username=user.username, login_username=user.login_username, first_name=user.first_name, plan=user.plan, is_admin=user.is_admin)
 
 
 @app.get('/api/stats')
@@ -376,6 +357,7 @@ async def stats() -> dict:
 
 @app.post('/api/waitlist', response_model=WaitlistOut)
 async def join_waitlist(payload: WaitlistIn, request: Request) -> WaitlistOut:
+    _rate_limit(f'waitlist:{_client_ip(request)}', limit=5, window_seconds=3600)
     if not payload.telegram_username and not payload.email:
         raise HTTPException(status_code=422, detail='Add your Telegram username or email so we can invite you.')
     async with SessionLocal() as session:
@@ -398,11 +380,18 @@ async def addons(user: User = Depends(current_user)) -> dict:
 
 
 
+_DUMMY_PASSWORD_HASH = _password_hash(secrets.token_urlsafe(16))
+
+
 @app.post('/api/auth/login', response_model=LoginOut)
-async def web_login(payload: LoginIn) -> LoginOut:
+async def web_login(payload: LoginIn, request: Request) -> LoginOut:
+    _rate_limit(f'login:{_client_ip(request)}', limit=10, window_seconds=300)
     async with SessionLocal() as session:
         user = await session.scalar(select(User).where(User.login_username == payload.username.strip()))
-        if not user or not _verify_password(payload.password, user.password_hash):
+        # Always run one PBKDF2 verify so a missing username costs the same
+        # time as a wrong password (no username-existence timing oracle).
+        password_ok = _verify_password(payload.password, user.password_hash if user else _DUMMY_PASSWORD_HASH)
+        if not user or not password_ok:
             raise HTTPException(status_code=401, detail='Wrong username or password.')
         if user.is_suspended:
             raise HTTPException(status_code=403, detail='Account is suspended. Contact support.')
@@ -480,13 +469,17 @@ def _safe_extract_zip(zip_path: Path, target: Path) -> None:
     if tmp_target.exists():
         shutil.rmtree(tmp_target)
     tmp_target.mkdir(parents=True, exist_ok=True)
+    unpack_limit = 50 * 1024 * 1024
     with zipfile.ZipFile(zip_path) as zf:
         members = zf.infolist()
         if len(members) > 1500:
             raise HTTPException(status_code=413, detail='ZIP has too many files. Limit: 1500 files.')
         total = sum(m.file_size for m in members)
-        if total > 50 * 1024 * 1024:
+        if total > unpack_limit:
             raise HTTPException(status_code=413, detail='Unpacked site is too large. Limit: 50 MB.')
+        # The declared file_size above comes from the archive and can lie
+        # (zip bomb), so also enforce the limit on actually-written bytes.
+        written_total = 0
         for member in members:
             name = member.filename.replace('\\', '/')
             if not name or name.startswith('/') or '..' in Path(name).parts:
@@ -496,7 +489,12 @@ def _safe_extract_zip(zip_path: Path, target: Path) -> None:
             dest = tmp_target / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(dest, 'wb') as dst:
-                shutil.copyfileobj(src, dst)
+                while chunk := src.read(1024 * 1024):
+                    written_total += len(chunk)
+                    if written_total > unpack_limit:
+                        shutil.rmtree(tmp_target, ignore_errors=True)
+                        raise HTTPException(status_code=413, detail='Unpacked site is too large. Limit: 50 MB.')
+                    dst.write(chunk)
     if not (tmp_target / 'index.html').exists():
         # Common GitHub zip shape: one root folder containing the site.
         children = [x for x in tmp_target.iterdir()]
@@ -614,6 +612,7 @@ RUNTIME_IMAGES = {
     'node_app': 'node:20-alpine',
     'mini_app': 'node:20-alpine',
 }
+HTTP_RUNTIME_TYPES = {'python_app', 'api', 'node_app', 'mini_app'}
 RUNTIME_COMMANDS = {
     'python_app': "sh -lc 'if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi; python main.py'",
     'telegram_bot': "sh -lc 'if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi; python main.py'",
@@ -637,10 +636,19 @@ RUNTIME_RESPONSE_MS: dict[int, float] = {}
 RUNTIME_MANAGER_URL = os.environ.get('RUNTIME_MANAGER_URL', 'http://runtime-manager:8010').rstrip('/')
 
 
+WORKSPACE_QUOTA_MB = int(os.environ.get('WORKSPACE_QUOTA_MB', '200'))
+
+
 def _workspace(project: Project) -> Path:
     root = WORKSPACE_ROOT / project.slug
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _check_workspace_quota(root: Path, incoming_bytes: int) -> None:
+    used_mb = _dir_size_mb(root)
+    if used_mb + incoming_bytes / (1024 * 1024) > WORKSPACE_QUOTA_MB:
+        raise HTTPException(status_code=413, detail=f'Workspace quota exceeded: {WORKSPACE_QUOTA_MB} MB per project. Currently used: {used_mb} MB.')
 
 
 def _safe_rel(path: str | None) -> Path:
@@ -670,10 +678,14 @@ def _run_local(cmd: list[str], timeout: int = 60, check: bool = False) -> subpro
     return proc
 
 
+def _runtime_manager_headers() -> dict[str, str]:
+    return {'X-Runtime-Manager-Token': settings.runtime_manager_token} if settings.runtime_manager_token else {}
+
+
 def _manager_get(path: str, timeout: int = 30) -> dict:
     try:
         with httpx.Client(timeout=timeout) as client:
-            r = client.get(f'{RUNTIME_MANAGER_URL}{path}')
+            r = client.get(f'{RUNTIME_MANAGER_URL}{path}', headers=_runtime_manager_headers())
         if r.status_code >= 400:
             return {'ok': False, 'error': r.text[:500], 'status_code': r.status_code}
         return r.json()
@@ -684,12 +696,22 @@ def _manager_get(path: str, timeout: int = 30) -> dict:
 def _manager_post(path: str, payload: dict, timeout: int = 60) -> dict:
     try:
         with httpx.Client(timeout=timeout) as client:
-            r = client.post(f'{RUNTIME_MANAGER_URL}{path}', json=payload)
+            r = client.post(f'{RUNTIME_MANAGER_URL}{path}', json=payload, headers=_runtime_manager_headers())
         if r.status_code >= 400:
             return {'ok': False, 'error': r.text[:500], 'status_code': r.status_code}
         return r.json()
     except Exception as exc:
         return {'ok': False, 'error': str(exc)[:500]}
+
+
+def _resolve_inside(root: Path, rel: Path, *, must_exist: bool = False) -> Path:
+    root_resolved = root.resolve()
+    candidate = (root / rel).resolve(strict=must_exist)
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError:
+        raise HTTPException(status_code=422, detail='Invalid path.')
+    return candidate
 
 
 # ── resource monitoring + auto-restart helpers ────────────────────────
@@ -943,9 +965,7 @@ async def list_project_files(project_id: int, path: str = '', user: User = Depen
     project = await _owned_project(project_id, user)
     _seed_project_files(project)
     root = _workspace(project)
-    base = (root / _safe_rel(path)).resolve()
-    if not str(base).startswith(str(root.resolve())):
-        raise HTTPException(status_code=422, detail='Invalid path.')
+    base = _resolve_inside(root, _safe_rel(path), must_exist=True)
     if not base.exists():
         raise HTTPException(status_code=404, detail='Path not found.')
     items = []
@@ -960,8 +980,8 @@ async def list_project_files(project_id: int, path: str = '', user: User = Depen
 async def read_project_file(project_id: int, path: str, user: User = Depends(current_user)) -> dict:
     project = await _owned_project(project_id, user)
     root = _workspace(project)
-    file_path = (root / _safe_rel(path)).resolve()
-    if not str(file_path).startswith(str(root.resolve())) or not file_path.is_file():
+    file_path = _resolve_inside(root, _safe_rel(path), must_exist=True)
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail='File not found.')
     if file_path.stat().st_size > 500_000:
         raise HTTPException(status_code=413, detail='File is too large for editor.')
@@ -973,12 +993,14 @@ async def write_project_file(project_id: int, payload: dict, user: User = Depend
     project = await _owned_project(project_id, user)
     root = _workspace(project)
     rel = _safe_rel(payload.get('path'))
-    file_path = (root / rel).resolve()
-    if not str(file_path).startswith(str(root.resolve())):
-        raise HTTPException(status_code=422, detail='Invalid path.')
+    file_path = _resolve_inside(root, rel)
     content = str(payload.get('content') or '')
-    if len(content.encode()) > 1_000_000:
+    body = content.encode()
+    if len(body) > 1_000_000:
         raise HTTPException(status_code=413, detail='File content too large.')
+    # Editor autosave fires often; only pay the quota walk for big writes.
+    if len(body) > 262_144:
+        await asyncio.to_thread(_check_workspace_quota, root, len(body))
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(content, encoding='utf-8')
     sync = await _sync_static_project(project, f'Auto-published after saving {rel}.')
@@ -990,12 +1012,11 @@ async def upload_project_file(project_id: int, file: UploadFile = File(...), pat
     project = await _owned_project(project_id, user)
     root = _workspace(project)
     filename = re.sub(r'[^a-zA-Z0-9._-]+', '-', file.filename or 'upload.bin')[:120]
-    target = (root / _safe_rel(path) / filename).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise HTTPException(status_code=422, detail='Invalid path.')
+    target = _resolve_inside(root, _safe_rel(path) / filename)
     data = await file.read()
     if len(data) > 10_000_000:
         raise HTTPException(status_code=413, detail='Single file limit is 10MB.')
+    await asyncio.to_thread(_check_workspace_quota, root, len(data))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     sync = await _sync_static_project(project, f'Auto-published after uploading {target.relative_to(root)}.')
@@ -1006,9 +1027,7 @@ async def upload_project_file(project_id: int, file: UploadFile = File(...), pat
 async def mkdir_project(project_id: int, payload: dict, user: User = Depends(current_user)) -> dict:
     project = await _owned_project(project_id, user)
     root = _workspace(project)
-    d = (root / _safe_rel(payload.get('path'))).resolve()
-    if not str(d).startswith(str(root.resolve())):
-        raise HTTPException(status_code=422, detail='Invalid path.')
+    d = _resolve_inside(root, _safe_rel(payload.get('path')))
     d.mkdir(parents=True, exist_ok=True)
     return {'ok': True}
 
@@ -1017,8 +1036,8 @@ async def mkdir_project(project_id: int, payload: dict, user: User = Depends(cur
 async def delete_project_file(project_id: int, payload: dict, user: User = Depends(current_user)) -> dict:
     project = await _owned_project(project_id, user)
     root = _workspace(project)
-    pth = (root / _safe_rel(payload.get('path'))).resolve()
-    if not str(pth).startswith(str(root.resolve())) or pth == root:
+    pth = _resolve_inside(root, _safe_rel(payload.get('path')), must_exist=True)
+    if pth == root.resolve():
         raise HTTPException(status_code=422, detail='Invalid path.')
     if pth.is_dir(): shutil.rmtree(pth)
     elif pth.exists(): pth.unlink()
@@ -1030,10 +1049,9 @@ async def delete_project_file(project_id: int, payload: dict, user: User = Depen
 async def rename_project_file(project_id: int, payload: dict, user: User = Depends(current_user)) -> dict:
     project = await _owned_project(project_id, user)
     root = _workspace(project)
-    src = (root / _safe_rel(payload.get('from'))).resolve()
-    dst = (root / _safe_rel(payload.get('to'))).resolve()
-    root_r = str(root.resolve())
-    if not str(src).startswith(root_r) or not str(dst).startswith(root_r) or src == root:
+    src = _resolve_inside(root, _safe_rel(payload.get('from')), must_exist=True)
+    dst = _resolve_inside(root, _safe_rel(payload.get('to')))
+    if src == root.resolve():
         raise HTTPException(status_code=422, detail='Invalid path.')
     if not src.exists():
         raise HTTPException(status_code=404, detail='Source not found.')
@@ -1334,6 +1352,69 @@ async def runtime_restart(project_id: int, background_tasks: BackgroundTasks, us
     return await runtime_start(project_id, background_tasks, user)
 
 
+ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _read_env_file_sync(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    variables = []
+    for line in path.read_text(encoding='utf-8', errors='ignore').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, val = line.split('=', 1)
+        key = key.strip()
+        if key.startswith('export '):
+            key = key.removeprefix('export ').strip()
+        if not ENV_KEY_RE.fullmatch(key):
+            # Keep the UI resilient when a user manually edited .env with
+            # unsupported shell syntax. The runtime Docker --env-file path also
+            # cannot safely consume those entries.
+            continue
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in {'"', "'"}:
+            val = val[1:-1]
+        variables.append({"key": key, "value": val})
+    return variables
+
+
+def _write_env_file_sync(path: Path, variables: list[EnvVar]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{var.key}={var.value}" for var in variables]
+    data = "\n".join(lines) + ("\n" if lines else "")
+    tmp = path.with_name(f'.{path.name}.tmp.{os.getpid()}')
+    tmp.write_text(data, encoding='utf-8')
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+@app.get('/api/projects/{project_id}/env', response_model=EnvVarsOut)
+async def get_project_env(project_id: int, user: User = Depends(current_user)) -> EnvVarsOut:
+    project = await _owned_project(project_id, user)
+    env_path = _workspace(project) / '.env'
+    vars_list = await asyncio.to_thread(_read_env_file_sync, env_path)
+    return EnvVarsOut(variables=[EnvVar(key=v["key"], value=v["value"]) for v in vars_list])
+
+
+@app.post('/api/projects/{project_id}/env')
+async def save_project_env(project_id: int, payload: EnvVarsIn, background_tasks: BackgroundTasks, user: User = Depends(current_user)) -> dict:
+    project = await _owned_project(project_id, user)
+    env_path = _workspace(project) / '.env'
+    await asyncio.to_thread(_write_env_file_sync, env_path, payload.variables)
+    
+    restarted = False
+    if project.type in RUNTIME_IMAGES and project.status in {'running', 'crashed', 'starting', 'queued'}:
+        await runtime_start(project_id, background_tasks, user)
+        restarted = True
+        
+    return {"ok": True, "restarted_container": restarted}
+
+
+
 @app.get('/api/projects/{project_id}/runtime/health')
 async def runtime_health(project_id: int, user: User = Depends(current_user)) -> dict:
     project = await _owned_project(project_id, user)
@@ -1453,22 +1534,40 @@ async def runtime_proxy(path: str, request: Request) -> Response:
     project = await _find_project_by_subdomain(sub)
     if not project or project.type not in RUNTIME_IMAGES:
         return Response('Site not found', status_code=404)
+    if project.type not in HTTP_RUNTIME_TYPES:
+        return Response('This project is a Telegram bot/runtime without a public HTTP site. Manage it from the VexHost dashboard or Telegram bot panel.', status_code=404, media_type='text/plain')
     RUNTIME_REQUESTS[project.id] = RUNTIME_REQUESTS.get(project.id, 0) + 1
     started_proxy = time()
     url = f"http://{_container_name(project)}:8080{path or '/'}"
     if request.url.query:
         url += '?' + request.url.query
     try:
+        fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in {'host', 'content-length'}}
+        client_ip = _client_ip(request)
+        if client_ip:
+            fwd_headers['x-forwarded-for'] = client_ip
+            fwd_headers['x-real-ip'] = client_ip
+        fwd_headers['x-forwarded-proto'] = 'https'
+        fwd_headers['x-forwarded-host'] = host
         async with httpx.AsyncClient(timeout=20) as client:
             body = await request.body()
-            upstream = await client.request(request.method, url, content=body, headers={k:v for k,v in request.headers.items() if k.lower() not in {'host','content-length'}})
+            upstream = await client.request(request.method, url, content=body, headers=fwd_headers, follow_redirects=False)
         elapsed_ms = (time() - started_proxy) * 1000
         prev = RUNTIME_RESPONSE_MS.get(project.id, 0)
         RUNTIME_RESPONSE_MS[project.id] = elapsed_ms if not prev else (prev * 0.75 + elapsed_ms * 0.25)
         RUNTIME_BYTES_OUT[project.id] = RUNTIME_BYTES_OUT.get(project.id, 0) + len(upstream.content or b'')
         if upstream.status_code >= 500:
             RUNTIME_ERRORS[project.id] = RUNTIME_ERRORS.get(project.id, 0) + 1
-        return Response(content=upstream.content, status_code=upstream.status_code, headers={'content-type': upstream.headers.get('content-type','text/plain')})
+        # Pass through the headers user apps rely on (redirects, sessions,
+        # caching) — but never hop-by-hop or transfer encoding headers.
+        safe = {'content-type', 'location', 'set-cookie', 'cache-control', 'content-disposition', 'content-language', 'etag', 'last-modified', 'vary'}
+        response = Response(content=upstream.content, status_code=upstream.status_code)
+        response.headers['content-type'] = upstream.headers.get('content-type', 'text/plain')
+        for key, value in upstream.headers.multi_items():
+            lk = key.lower()
+            if lk in safe and lk != 'content-type':
+                response.headers.append(key, value)
+        return response
     except Exception as exc:
         RUNTIME_ERRORS[project.id] = RUNTIME_ERRORS.get(project.id, 0) + 1
         return Response(f'Runtime is not ready: {exc}', status_code=502)

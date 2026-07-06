@@ -30,7 +30,7 @@ VexHost is currently a beta project in active development. Some features are exp
 
 ## What Is VexHost?
 
-VexHost is a Telegram-first hosting platform for builders who want to publish projects quickly without setting up a full server workflow. It combines a web dashboard, Telegram bot access, Docker-based runtimes, live logs, file management, and basic monitoring in one lightweight stack.
+VexHost is a Telegram-first hosting platform for builders who want to publish projects quickly without setting up a full server workflow. It combines a web dashboard, Telegram bot access, Docker-based runtimes, live logs, file management, per-project environment variables, and basic monitoring in one lightweight stack.
 
 Live beta: [https://host.vexory.xyz/](https://host.vexory.xyz/)
 
@@ -40,10 +40,22 @@ Live beta: [https://host.vexory.xyz/](https://host.vexory.xyz/)
 - Manage projects from a browser dashboard or through `@VexHostBot`.
 - Run app workloads in isolated Docker containers.
 - Edit project files in the browser with a Monaco-powered editor.
+- Manage per-project `.env` variables from the dashboard with masked values and validation.
 - View deployment progress, runtime logs, CPU, RAM, disk, uptime, request, and error metrics.
 - Restart, stop, and inspect running projects from the dashboard.
 - Publish projects to generated `*.vexory.xyz` subdomains.
 - Use a separate admin dashboard for users, projects, abuse flags, and runtime operations.
+
+## Recent Update
+
+This version adds a dedicated Environment Variables Manager:
+
+- `GET /api/projects/{project_id}/env` reads a project's `.env` file safely.
+- `POST /api/projects/{project_id}/env` atomically writes variables with restricted file permissions.
+- Runtime containers automatically restart when saved environment changes need to be applied.
+- The dashboard now includes an Env variables tab with masked values, add/edit/delete controls, duplicate-key checks, and multiline-value validation.
+- The runtime manager now requires a shared backend token for sensitive container operations.
+- Session signing now uses `AUTH_SECRET` in production instead of falling back to a predictable default.
 
 ## Tech Stack
 
@@ -96,7 +108,11 @@ CORS_ORIGINS=https://host.vexory.xyz
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_ADMIN_CHAT_ID=
 DASHBOARD_URL=https://host.vexory.xyz/?view=dashboard
+AUTH_SECRET=
+RUNTIME_MANAGER_TOKEN=
 ```
+
+For production, set strong random values for `AUTH_SECRET` and `RUNTIME_MANAGER_TOKEN`.
 
 ### 2. Start The Stack
 
@@ -127,9 +143,12 @@ curl https://host.vexory.xyz/healthz
 | Endpoint | Description |
 | --- | --- |
 | `GET /healthz` | Backend health check. |
+| `GET /api/health` | API health alias. |
 | `GET /api/stats` | Basic platform statistics. |
 | `GET /api/templates` | Available starter templates. |
 | `GET /api/dashboard` | Authenticated user dashboard data. |
+| `GET /api/projects/{project_id}/env` | Authenticated project environment variables. |
+| `POST /api/projects/{project_id}/env` | Save project environment variables and apply them to runtime containers. |
 | `GET /api/admin/summary` | Admin overview for users, projects, queues, and abuse flags. |
 
 ## Project Structure
@@ -156,6 +175,7 @@ curl https://host.vexory.xyz/healthz
 - Telegram-based account flow
 - Project creation and runtime configuration
 - Static deployment flow
+- Per-project file manager and environment variables manager
 - Docker runtime launch, stop, restart, logs, metrics, and health checks
 - Admin overview, abuse signals, and dangerous admin actions behind confirmation
 
@@ -172,6 +192,7 @@ curl https://host.vexory.xyz/healthz
 ## Security Notes
 
 - Do not commit `.env` files or Telegram bot tokens.
+- Set strong random values for `AUTH_SECRET` and `RUNTIME_MANAGER_TOKEN` before production use.
 - Review Docker socket access before production use.
 - Treat runtime execution as sensitive infrastructure.
 - Keep admin access limited to trusted accounts.

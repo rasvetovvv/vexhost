@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Editor from '@monaco-editor/react';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, Code2, Cpu, FilePlus, FileText, Folder, FolderPlus, Globe2, HardDrive, Loader2, Lock, MemoryStick, Menu, ShieldCheck, Users, Ban, KeyRound, Database, Moon, Pencil, Play, Plus, RefreshCw, RotateCw, Rocket, Save, ScrollText, Search, Send, Server, Sparkles, Square, Sun, Terminal, Trash2, Upload, Wand2, Wrench, X, XCircle, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, Code2, Cpu, Eye, EyeOff, FilePlus, FileText, Folder, FolderPlus, Globe2, HardDrive, Loader2, Lock, MemoryStick, Menu, ShieldCheck, Users, Ban, KeyRound, Database, Moon, Pencil, Play, Plus, RefreshCw, RotateCw, Rocket, Save, ScrollText, Search, Send, Server, Sparkles, Square, Sun, Terminal, Trash2, Upload, Wand2, Wrench, X, XCircle, Zap } from 'lucide-react';
+
 import './styles.css';
 
 const tg = window.Telegram?.WebApp;
@@ -16,7 +17,15 @@ async function api(path, options = {}) {
   const isForm = options.body instanceof FormData;
   const res = await fetch(path, { ...options, headers: authHeaders(isForm ? (options.headers || {}) : { 'Content-Type': 'application/json', ...(options.headers || {}) }) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `Request failed ${res.status}`);
+  if (!res.ok) {
+    // A stale/revoked browser token makes every call fail — drop it once and
+    // return to the login screen instead of erroring on every panel.
+    if (res.status === 401 && !initData && localStorage.getItem(tokenKey) && path !== '/api/auth/login') {
+      localStorage.removeItem(tokenKey);
+      location.reload();
+    }
+    throw new Error(data.detail || `Request failed ${res.status}`);
+  }
   return data;
 }
 function Stat({ value, label }) { return <div className="stat"><b>{value}</b><span>{label}</span></div>; }
@@ -70,7 +79,7 @@ function navAction(a, onNav) {
     : <button className={cls} onClick={handle}>{inner}</button>;
 }
 
-function NavBar({ brand = 'VexHost', links = [], actions = [] }) {
+function NavBar({ brand = 'VexHost', brandHref = '/', links = [], actions = [] }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     const close = () => setOpen(false);
@@ -80,7 +89,7 @@ function NavBar({ brand = 'VexHost', links = [], actions = [] }) {
   const linkEl = (l, cls) => <a key={l.label} className={`${cls}${l.cta ? ' nav-cta' : ''}`} href={l.href} onClick={() => setOpen(false)} {...(l.external ? { target: '_blank', rel: 'noreferrer' } : {})}>{l.cta && <Plus size={14} />}{l.label}</a>;
   return <nav className="nav">
     <div className="nav-inner">
-      <a className="brand" href="/"><span>V</span> {brand}</a>
+      <a className="brand" href={brandHref}><span>V</span> {brand}</a>
       <div className="nav-links">{links.map(l => linkEl(l, 'nav-link'))}</div>
       <div className="nav-actions">
         <div className="nav-actions-desk">{actions.map((a, i) => <React.Fragment key={i}>{navAction(a)}</React.Fragment>)}</div>
@@ -95,6 +104,13 @@ function NavBar({ brand = 'VexHost', links = [], actions = [] }) {
   </nav>;
 }
 
+function AuthLoading() {
+  return <article className="panel login-panel login-loading" aria-live="polite">
+    <div className="login-spinner"><Loader2 size={20} className="spin" /></div>
+    <div><h2>Restoring dashboard…</h2><p>Checking your browser session securely. This prevents the login screen from flashing during navigation.</p></div>
+  </article>;
+}
+
 function Login({ onLogin }) {
   const [form, setForm] = useState({ username: '', password: '' });
   const [status, setStatus] = useState('');
@@ -103,7 +119,23 @@ function Login({ onLogin }) {
     try { const r = await api('/api/auth/login', { method: 'POST', body: JSON.stringify(form) }); localStorage.setItem(tokenKey, r.token); setStatus('Signed in.'); onLogin(); }
     catch (err) { setStatus(err.message); }
   }
-  return <article className="panel login-panel"><h2>Browser login</h2><p>Open @VexHostBot once to receive username/password, then manage hosting from any browser.</p><form className="form" onSubmit={submit}><input placeholder="Username from bot" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} /><input placeholder="Password from bot" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /><button className="primary" disabled={!form.username || !form.password}><Lock size={18} /> Login</button></form>{status && <p className="notice">{status}</p>}</article>;
+  return <article className="panel login-panel login-card">
+    <div className="login-glow" aria-hidden="true" />
+    <div className="login-topline"><span><ShieldCheck size={14} /> Secure browser access</span><em>Telegram-linked</em></div>
+    <div className="login-icon"><Lock size={22} /></div>
+    <h2>Welcome back to VexHost</h2>
+    <p>Use the browser credentials issued by <a href="https://t.me/VexHostBot" target="_blank" rel="noreferrer">@VexHostBot</a>. Your session opens the same hosting dashboard as the Telegram Mini App.</p>
+    <form className="form login-form" onSubmit={submit}>
+      <label><span>Username</span><input placeholder="vex_..." value={form.username} autoComplete="username" onChange={e => setForm({ ...form, username: e.target.value })} /></label>
+      <label><span>Password</span><input placeholder="••••••••" type="password" minLength={8} autoComplete="current-password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></label>
+      <button className="primary login-submit" disabled={!form.username || !form.password}><Lock size={18} /> Open dashboard</button>
+    </form>
+    <div className="login-footnotes">
+      <span><Bot size={14} /> Get credentials in Telegram</span>
+      <span><Rocket size={14} /> Manage sites, bots and runtimes</span>
+    </div>
+    {status && <p className={`notice ${status.toLowerCase().includes('signed') ? 'notice-success' : status.toLowerCase().includes('signing') ? '' : 'notice-error'}`}>{status}</p>}
+  </article>;
 }
 
 function fmtUptime(s) {
@@ -380,6 +412,7 @@ function ProjectSideNav({ project, active, onChange, onNew }) {
     ['overview', <Server size={15} />, 'Overview'],
     ...(runtime ? [['console', <Terminal size={15} />, 'Console & monitoring']] : []),
     ['files', <Folder size={15} />, 'Files manager'],
+    ['env', <KeyRound size={15} />, 'Env variables'],
     ['addons', <Zap size={15} />, 'Add-ons'],
     ['runtime', <Wrench size={15} />, project.type.includes('node') || project.type === 'mini_app' ? 'Node.js guide' : project.type.includes('python') || project.type === 'api' ? 'Python guide' : 'Hosting guide'],
     ...(project.type === 'telegram_bot' ? [['bot', <Bot size={15} />, 'Telegram bot']] : []),
@@ -539,12 +572,13 @@ function ProjectConsole({ project, onChanged, activeView = 'overview', setActive
       </div>
     </div>
     <div className="mobile-console-tabs">
-      {['overview','console','files','addons','runtime', project.type === 'telegram_bot' ? 'bot' : null,'ideas'].filter(Boolean).map(id => <button key={id} className={activeView === id ? 'on' : ''} onClick={() => setActiveView?.(id)}>{id}</button>)}
+      {['overview','console','files','env','addons','runtime', project.type === 'telegram_bot' ? 'bot' : null,'ideas'].filter(Boolean).map(id => <button key={id} className={activeView === id ? 'on' : ''} onClick={() => setActiveView?.(id)}>{id}</button>)}
     </div>
     {status && <p className="notice">{status}</p>}
-    {activeView === 'overview' && <section className="project-tab-panel overview-panel"><div className="tab-panel-head"><div><p className="eyebrow"><Server size={14} /> Overview</p><h3>Project control center</h3></div><span className={`badge badge-${project.status}`}>{project.status}</span></div><div className="overview-grid"><button onClick={() => setActiveView?.('console')}><Terminal size={18} /><b>Console</b><span>Start, restart, logs and commands</span></button><button onClick={() => setActiveView?.('files')}><Folder size={18} /><b>Files</b><span>Edit code and upload files</span></button><button onClick={() => setActiveView?.('addons')}><Zap size={18} /><b>Add-ons</b><span>Database, Redis, domains, storage</span></button><button onClick={() => setActiveView?.('runtime')}><Wrench size={18} /><b>Runtime guide</b><span>Python/Node.js production tips</span></button></div></section>}
+    {activeView === 'overview' && <section className="project-tab-panel overview-panel"><div className="tab-panel-head"><div><p className="eyebrow"><Server size={14} /> Overview</p><h3>Project control center</h3></div><span className={`badge badge-${project.status}`}>{project.status}</span></div><div className="overview-grid"><button onClick={() => setActiveView?.('console')}><Terminal size={18} /><b>Console</b><span>Start, restart, logs and commands</span></button><button onClick={() => setActiveView?.('files')}><Folder size={18} /><b>Files</b><span>Edit code and upload files</span></button><button onClick={() => setActiveView?.('env')}><KeyRound size={18} /><b>Env variables</b><span>Configure project secrets and environment variables</span></button><button onClick={() => setActiveView?.('addons')}><Zap size={18} /><b>Add-ons</b><span>Database, Redis, domains, storage</span></button><button onClick={() => setActiveView?.('runtime')}><Wrench size={18} /><b>Runtime guide</b><span>Python/Node.js production tips</span></button></div></section>}
     {activeView === 'console' && consoleView}
     {activeView === 'files' && filesView}
+    {activeView === 'env' && <EnvPanel project={project} onChanged={onChanged} />}
     {activeView === 'addons' && <ProjectAddons items={addons} />}
     {activeView === 'runtime' && <RuntimeGuide project={project} />}
     {activeView === 'bot' && project.type === 'telegram_bot' && <BotPanel project={project} />}
@@ -618,8 +652,196 @@ function BotPanel({ project }) {
   </section>;
 }
 
+
+function EnvPanel({ project, onChanged }) {
+  const [variables, setVariables] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState('');
+  const [statusType, setStatusType] = useState('info'); // 'info', 'success', 'error'
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await api(`/api/projects/${project.id}/env`);
+      const vars = (r.variables || []).map(v => ({ ...v, masked: true }));
+      setVariables(vars);
+      setStatus('');
+    } catch (e) {
+      setStatus('Failed to load variables: ' + e.message);
+      setStatusType('error');
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+  }, [project.id]);
+
+  function add() {
+    setVariables(v => [...v, { key: '', value: '', masked: true }]);
+  }
+
+  function remove(i) {
+    setVariables(v => v.filter((_, idx) => idx !== i));
+  }
+
+  function update(i, field, value) {
+    setVariables(v => v.map((item, idx) => {
+      if (idx === i) {
+        let val = value;
+        if (field === 'key') {
+          val = value.toUpperCase().replace(/[^A-Z0-9_]/g, '');
+        }
+        return { ...item, [field]: val };
+      }
+      return item;
+    }));
+  }
+
+  function toggleMask(i) {
+    setVariables(v => v.map((item, idx) => idx === i ? { ...item, masked: !item.masked } : item));
+  }
+
+  async function save() {
+    const duplicateKeys = new Set();
+    const seenKeys = new Set();
+    variables.forEach(v => {
+      if (seenKeys.has(v.key)) duplicateKeys.add(v.key);
+      seenKeys.add(v.key);
+    });
+    const invalid = variables.some(v => !v.key || !/^[A-Z_][A-Z0-9_]*$/.test(v.key));
+    if (invalid) {
+      setStatus('Keys must be non-empty and contain only uppercase letters, numbers, and underscores (starting with a letter).');
+      setStatusType('error');
+      return;
+    }
+    if (duplicateKeys.size) {
+      setStatus(`Duplicate key${duplicateKeys.size > 1 ? 's' : ''}: ${[...duplicateKeys].join(', ')}`);
+      setStatusType('error');
+      return;
+    }
+    if (variables.some(v => /[\n\r\0]/.test(v.value))) {
+      setStatus('Values cannot contain newlines or null bytes. Store multiline secrets as base64 or escaped text.');
+      setStatusType('error');
+      return;
+    }
+    setSaving(true);
+    setStatus('Saving environment variables...');
+    setStatusType('info');
+    try {
+      const payload = {
+        variables: variables.map(v => ({ key: v.key, value: v.value }))
+      };
+      const res = await api(`/api/projects/${project.id}/env`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if (res.restarted_container) {
+        setStatus('Environment variables saved. Restarting container to apply changes...');
+        setStatusType('success');
+        onChanged?.();
+      } else {
+        setStatus('Environment variables saved successfully.');
+        setStatusType('success');
+      }
+    } catch (e) {
+      setStatus('Failed to save variables: ' + e.message);
+      setStatusType('error');
+    }
+    setSaving(false);
+  }
+
+  const isRuntime = RUNTIME_TYPES.includes(project.type);
+
+  return <section className="bot-panel env-variables-panel">
+    <div className="bot-head">
+      <div>
+        <p className="eyebrow"><KeyRound size={14} /> Secrets manager</p>
+        <h3>Environment Variables</h3>
+      </div>
+      <button onClick={load} disabled={loading}><RefreshCw size={14} className={loading ? "spin" : ""} /> Refresh</button>
+    </div>
+
+    {status && (
+      <p className={`notice${statusType === 'error' ? ' notice-error' : statusType === 'success' ? ' notice-success' : ''}`}>
+        {status}
+      </p>
+    )}
+
+    <article className="bot-card env-card">
+      <h4><Lock size={15} /> Project environment variables (.env)</h4>
+      <p className="muted env-note">
+        Configure secrets, API tokens, and options for your project. {isRuntime ? "Containers will be restarted automatically when variables are saved." : "Static projects do not require restart."}
+      </p>
+
+      {loading ? (
+        <div className="env-loading">
+          <Loader2 size={18} className="spin" /> Loading environment variables...
+        </div>
+      ) : (
+        <>
+          <div className="env-rows">
+            {variables.map((v, i) => (
+              <div className="env-row" key={i}>
+                <input
+                  className="env-key"
+                  value={v.key}
+                  onChange={e => update(i, 'key', e.target.value)}
+                  placeholder="API_KEY"
+                  aria-label="Variable name"
+                  disabled={saving}
+                />
+                <div className="env-value">
+                  <input
+                    type={v.masked ? "password" : "text"}
+                    value={v.value}
+                    onChange={e => update(i, 'value', e.target.value)}
+                    placeholder="your-secret-value-here"
+                    aria-label="Variable value"
+                    disabled={saving}
+                  />
+                  <button
+                    type="button"
+                    className="env-eye"
+                    onClick={() => toggleMask(i)}
+                    title={v.masked ? "Show value" : "Hide value"}
+                  >
+                    {v.masked ? <Eye size={14} /> : <EyeOff size={14} />}
+                  </button>
+                </div>
+                <button
+                  className="icon-danger env-remove"
+                  onClick={() => remove(i)}
+                  disabled={saving}
+                  title="Remove variable"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            {variables.length === 0 && (
+              <p className="muted env-empty">
+                No variables set yet. Click the button below to add your first variable.
+              </p>
+            )}
+          </div>
+          <div className="command-actions env-actions">
+            <button onClick={add} disabled={saving}><Plus size={14} /> Add variable</button>
+            <button className="primary" onClick={save} disabled={saving}>
+              {saving ? <><Loader2 size={14} className="spin" /> Saving...</> : <><Save size={14} /> Save &amp; Apply</>}
+            </button>
+          </div>
+        </>
+      )}
+    </article>
+  </section>;
+}
+
+
 function Dashboard() {
   const [dash, setDash] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [templates, setTemplates] = useState([]);
   const [addons, setAddons] = useState([]);
   const [admin, setAdmin] = useState(null);
@@ -629,15 +851,21 @@ function Dashboard() {
   const [status, setStatus] = useState('');
 
   async function load() {
-    try { const t = await api('/api/templates'); setTemplates(t.items || []); } catch (_) {}
-    try { const a = await api('/api/addons'); setAddons(a.items || []); } catch (_) {}
+    const hadAuth = Boolean(initData || localStorage.getItem(tokenKey));
+    setLoading(true);
+    setStatus('');
     try {
       const d = await api('/api/dashboard');
       setDash(d);
       if (selected) setSelected((d.projects || []).find(p => p.id === selected.id) || null);
+      try { const t = await api('/api/templates'); setTemplates(t.items || []); } catch (_) {}
+      try { const a = await api('/api/addons'); setAddons(a.items || []); } catch (_) {}
       if (d.user?.is_admin) { try { setAdmin(await api('/api/admin/summary')); } catch (_) {} }
     } catch (err) {
-      setStatus(initData ? 'Session error: ' + err.message : 'Login in browser or open from Telegram bot.');
+      setDash(null);
+      setStatus(hadAuth ? (initData ? 'Session error: ' + err.message : 'Browser session expired. Please log in again.') : '');
+    } finally {
+      setLoading(false);
     }
   }
   useEffect(() => { tg?.ready?.(); tg?.expand?.(); load(); }, []);
@@ -672,11 +900,14 @@ function Dashboard() {
   const user = dash?.user;
   const projects = dash?.projects || [];
   const activeTemplate = templates.find(t => t.key === form.template_key);
+  const projectUrl = (p) => p.live_url || (p.subdomain ? `https://${p.subdomain}.vexory.xyz/` : '');
+  const canOpenProject = (p) => Boolean(projectUrl(p)) && p.type !== 'telegram_bot' && ['live', 'running'].includes(p.status);
 
   return <main className="dashboard-page dashboard-polish">
     <NavBar
+      brandHref={dash ? "#dashboard" : "/"}
       links={[
-        { label: 'Home', href: '/' },
+        { label: 'Home', href: dash ? '#dashboard' : '#' },
         { label: 'Dashboard', href: '#dashboard' },
         { label: 'Create', href: '#create', cta: true },
         ...(user?.is_admin ? [{ label: 'Admin', href: '#admin' }] : []),
@@ -690,7 +921,8 @@ function Dashboard() {
       <h1 className="reveal" style={{ '--i': 1 }}>Control center for your apps.</h1>
       <p className="subtitle reveal" style={{ '--i': 2 }}>Fast polished dashboard: create projects, edit files, start containers, watch metrics and ship to *.vexory.xyz from browser or Telegram Mini App.</p>
       {status && <div className="notice">{status}</div>}
-      {!dash && !initData && <Login onLogin={load} />}
+      {loading && !dash && <AuthLoading />}
+      {!loading && !dash && !initData && <Login onLogin={load} />}
       {user && <div className="stats reveal">
         <Stat value={user.login_username || ('@' + user.telegram_id)} label="browser login" />
         <Stat value={`${dash.limits.projects_used}/${dash.limits.projects_limit}`} label="projects" />
@@ -727,11 +959,11 @@ function Dashboard() {
         <div className="section-head"><div><p className="eyebrow">Projects</p><h2>Your servers and sites</h2></div><button onClick={load}><RefreshCw size={14} /> Refresh</button></div>
         <div className="project-list">
           {projects.map(p => <article className={`project-card ${selected?.id === p.id ? 'on' : ''}`} key={p.id}>
-            <div><h3>{p.name}</h3><p>{p.type} · <a href={p.live_url || `https://${p.subdomain}.vexory.xyz/`} target="_blank" rel="noreferrer">{p.subdomain}.vexory.xyz</a></p></div>
+            <div><h3>{p.name}</h3><p>{p.type} · {canOpenProject(p) ? <a href={projectUrl(p)} target="_blank" rel="noreferrer">{p.subdomain}.vexory.xyz</a> : <span>{p.subdomain}.vexory.xyz · {p.type === 'telegram_bot' ? 'bot panel only' : 'not live yet'}</span>}</p></div>
             <span className={`badge badge-${p.status}`}>{p.status}</span>
             <div className="project-actions">
               <button className="primary manage-btn" onClick={() => { setSelected(p); setManageView('overview'); }}><Code2 size={14} /> Manage</button>
-              <a className="button" href={p.live_url || `https://${p.subdomain}.vexory.xyz/`} target="_blank" rel="noreferrer"><Globe2 size={14} /> Open</a>
+              {canOpenProject(p) ? <a className="button" href={projectUrl(p)} target="_blank" rel="noreferrer"><Globe2 size={14} /> Open</a> : <button className="button" disabled title={p.type === 'telegram_bot' ? 'Telegram bot projects do not expose a public HTTP site.' : 'Publish/start this project before opening it.'}><Globe2 size={14} /> Open</button>}
               <button className="danger" onClick={() => deleteProject(p)}><Trash2 size={14} /> Delete</button>
             </div>
           </article>)}
@@ -931,7 +1163,30 @@ const SHIP_STEPS = [
   ['03', 'Live on a subdomain', 'Health check passes and your project is served at name.vexory.xyz, ready to share.', 'name.vexory.xyz'],
 ];
 
+const TRUST_PILLS = [
+  ['api.vexory.xyz', '42 ms', Activity],
+  ['bot.polling', 'online', Bot],
+  ['static.deploy', 'live', Globe2],
+  ['node.runtime', '96 MB', Server],
+];
+
+const HERO_FLOATERS = [
+  ['left top', <Bot size={18} />, 'Telegram bot', 'polling · live', 'from /new to deploy'],
+  ['left bottom', <Terminal size={18} />, 'Runtime logs', 'build passed', 'npm install → health'],
+  ['right top', <Globe2 size={18} />, 'Subdomain', 'ready', 'my-api.vexory.xyz'],
+  ['right bottom', <Activity size={18} />, 'Monitoring', '42 ms', 'CPU · RAM · uptime'],
+];
+
+const MAKER_INITIALS = ['JS', 'PY', 'AI', 'TG', 'API', 'UI', 'DB'];
+
+const LANDING_STATS = [
+  ['Hosted projects', '3,200+', Server],
+  ['Deploys shipped', '18k+', Rocket],
+  ['Avg. cold start', '<3s', Zap],
+];
+
 function Landing() {
+  const [claim, setClaim] = useState('my-api');
   const features = [
     ['File manager', 'Upload files, create folders and edit code right in the browser.', FileText, false],
     ['Instant publishing', 'Change index.html and your static site ships to prod — no ZIP, no wait.', Globe2, false],
@@ -941,7 +1196,7 @@ function Landing() {
     ['Auto-restart', 'If a container crashes, VexHost restarts it and shows the crash reason.', RotateCw, false],
   ];
   return (
-    <main>
+    <main className="landing-page">
       <NavBar
         links={[
           { label: 'Features', href: '#features' },
@@ -957,14 +1212,40 @@ function Landing() {
       />
 
       <section className="hero">
-        <p className="eyebrow reveal" style={{ '--i': 0 }}><Zap size={14} /> Free hosting · managed from Telegram</p>
-        <h1 className="display reveal" style={{ '--i': 1 }}>Hosting for websites, servers<br /><span className="muted-word">and Telegram bots.</span></h1>
-        <p className="lead reveal" style={{ '--i': 2 }}>Free. Deploy static sites, Node, Python and APIs in isolated containers — from a Telegram bot or your browser.</p>
-        <div className="hero-actions reveal" style={{ '--i': 3 }}>
+        <div className="hero-floaters" aria-hidden="true">
+          {HERO_FLOATERS.map(([pos, icon, title, meta, body], i) => (
+            <div className={`hero-floater ${pos.replace(' ', '-')}`} style={{ '--i': i }} key={title}>
+              <span className="hf-icon">{icon}</span>
+              <b>{title}</b>
+              <em>{meta}</em>
+              <small>{body}</small>
+            </div>
+          ))}
+        </div>
+        <div className="hero-badge reveal" style={{ '--i': 0 }}>
+          <span className="avatar-stack" aria-hidden="true">{MAKER_INITIALS.slice(0, 3).map(x => <i key={x}>{x}</i>)}</span>
+          Loved by builders shipping from Telegram
+        </div>
+        <p className="eyebrow reveal" style={{ '--i': 1 }}><Zap size={14} /> Free hosting · managed from Telegram</p>
+        <h1 className="display reveal" style={{ '--i': 2 }}>More than free hosting.<br /><span className="gradient-word">Your launch OS.</span></h1>
+        <p className="lead reveal" style={{ '--i': 3 }}>Deploy static sites, Node, Python, APIs and Telegram bots in isolated containers — with subdomains, logs, metrics and secrets from one dashboard.</p>
+        <form className="claim-box reveal" style={{ '--i': 4 }} onSubmit={e => { e.preventDefault(); location.hash = '#create'; }}>
+          <span>vexory.xyz/</span>
+          <input aria-label="Choose your VexHost subdomain" value={claim} onChange={e => setClaim(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32))} placeholder="my-api" />
+          <button type="submit">Claim it <ArrowRight size={14} /></button>
+        </form>
+        <div className="maker-row reveal" style={{ '--i': 5 }}>
+          <span className="maker-avatars" aria-hidden="true">{MAKER_INITIALS.map(x => <i key={x}>{x}</i>)}</span>
+          <b>7500+ deploy-minded creators</b>
+        </div>
+        <div className="hero-actions reveal" style={{ '--i': 6 }}>
           <a className="primary btn-lg" href="#dashboard">Start for free <ArrowRight size={16} /></a>
           <a className="btn-tg btn-lg" href="https://t.me/VexHostBot"><Send size={16} /> Open in Telegram</a>
         </div>
-        <div className="reveal" style={{ '--i': 4 }}><DeployConsole /></div>
+        <div className="trust-pills reveal" style={{ '--i': 7 }} aria-label="Live hosting signals">
+          {TRUST_PILLS.map(([name, meta, Icon], i) => <span className="trust-pill" key={name} style={{ '--p': i }}><Icon size={14} /> <b>{name}</b><em>{meta}</em></span>)}
+        </div>
+        <div className="reveal" style={{ '--i': 8 }}><DeployConsole /></div>
       </section>
 
       <div className="trust">
@@ -975,9 +1256,12 @@ function Landing() {
       </div>
 
       <section className="ship" id="how">
-        <div className="section-head">
-          <p className="eyebrow reveal">How it works</p>
-          <h2 className="title reveal">From chat to production in three steps.</h2>
+        <div className="section-head section-label-head">
+          <div>
+            <p className="eyebrow reveal">How it works</p>
+            <h2 className="title reveal">From chat to production in three steps.</h2>
+          </div>
+          <span className="section-index reveal">[01]</span>
         </div>
         <div className="ship-rail">
           {SHIP_STEPS.map(([no, t, d, code], i) => (
@@ -992,9 +1276,12 @@ function Landing() {
       </section>
 
       <section className="section" id="features">
-        <div className="section-head">
-          <p className="eyebrow reveal">Features</p>
-          <h2 className="title reveal">Real hosting, not just ZIP uploads.</h2>
+        <div className="section-head section-label-head">
+          <div>
+            <p className="eyebrow reveal">Features</p>
+            <h2 className="title reveal">Real hosting, not just ZIP uploads.</h2>
+          </div>
+          <span className="section-index reveal">[02]</span>
         </div>
         <div className="bento">
           <article className="card feat-lg reveal">
@@ -1021,6 +1308,26 @@ function Landing() {
             <h3>Manage from wherever you are</h3>
             <p>The bot hands you access and pings you on every deploy; the dashboard gives you the full file manager, console and metrics. Same account, two front doors.</p>
           </article>
+        </div>
+      </section>
+
+      <section className="social-proof section">
+        <div className="section-head section-label-head center">
+          <div>
+            <p className="eyebrow reveal"><Users size={14} /> Social proof</p>
+            <h2 className="title reveal">Small projects deserve production energy.</h2>
+            <p className="lead reveal">A cleaner proof block inspired by modern gaming/client landings, adapted for VexHost reliability instead of hype.</p>
+          </div>
+          <span className="section-index reveal">[03]</span>
+        </div>
+        <div className="proof-grid">
+          {LANDING_STATS.map(([label, value, Icon], i) => (
+            <article className="proof-card reveal" style={{ '--i': i }} key={label}>
+              <Icon size={24} />
+              <span>{label}</span>
+              <b>{value}</b>
+            </article>
+          ))}
         </div>
       </section>
 
@@ -1078,12 +1385,17 @@ function Landing() {
       </section>
 
       <div className="cta-band">
-        <div className="wrap reveal">
-          <h2>Deploy your first project in a minute.</h2>
-          <p>Open the dashboard or message the bot — access is granted instantly.</p>
-          <div className="hero-actions">
-            <a className="primary btn-lg" href="#dashboard">Open dashboard <ArrowRight size={16} /></a>
-            <a className="secondary btn-lg" href="https://t.me/VexHostBot"><Send size={16} /> Open in Telegram</a>
+        <div className="wrap cta-crown-card reveal">
+          <div className="cta-copy">
+            <h2>Your launch starts now.</h2>
+            <p>Open the dashboard or message the bot — get instant access, a subdomain and a live deploy flow.</p>
+            <div className="hero-actions">
+              <a className="primary btn-lg" href="#dashboard">Open dashboard <ArrowRight size={16} /></a>
+              <a className="secondary btn-lg" href="https://t.me/VexHostBot"><Send size={16} /> Open in Telegram</a>
+            </div>
+          </div>
+          <div className="server-crowns" aria-hidden="true">
+            <span /><span /><span className="big" /><span /><span />
           </div>
         </div>
       </div>

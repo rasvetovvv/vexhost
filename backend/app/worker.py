@@ -20,7 +20,10 @@ async def claim_job() -> int | None:
     async with SessionLocal() as session:
         job = await session.scalar(
             select(Deployment)
-            .where(Deployment.status == 'queued')
+            # Runtime container starts are handled by the API's background task
+            # (_runtime_start_job); claiming them here would race it and fail
+            # deploy_static() with repo_url='runtime'.
+            .where(Deployment.status == 'queued', Deployment.build_command != 'runtime-start')
             .order_by(Deployment.id.asc())
             .limit(1)
         )

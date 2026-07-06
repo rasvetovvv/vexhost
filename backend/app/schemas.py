@@ -135,3 +135,39 @@ class AdminSummaryOut(BaseModel):
     projects: int
     deployments: int
     recent_projects: list[ProjectOut]
+
+
+class EnvVar(BaseModel):
+    key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    value: str = Field(max_length=4096)
+
+    @field_validator('key')
+    @classmethod
+    def clean_env_key(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator('value')
+    @classmethod
+    def validate_env_value(cls, value: str) -> str:
+        if any(ch in value for ch in ('\n', '\r', '\x00')):
+            raise ValueError('Environment variable values cannot contain newlines or null bytes.')
+        return value
+
+
+class EnvVarsOut(BaseModel):
+    variables: list[EnvVar]
+
+
+class EnvVarsIn(BaseModel):
+    variables: list[EnvVar] = Field(default_factory=list, max_length=100)
+
+    @field_validator('variables')
+    @classmethod
+    def validate_unique_keys(cls, variables: list[EnvVar]) -> list[EnvVar]:
+        seen: set[str] = set()
+        for var in variables:
+            if var.key in seen:
+                raise ValueError(f'Duplicate environment variable key: {var.key}')
+            seen.add(var.key)
+        return variables
+

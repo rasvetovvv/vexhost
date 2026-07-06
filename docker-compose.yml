@@ -24,6 +24,7 @@ services:
       DEPLOY_ROOT: /data/deployments
       RUNTIME_HOST_DEPLOY_ROOT: /var/lib/docker/volumes/vexhost_deploy_data/_data
       RUNTIME_NETWORK: vexhost_default
+      RUNTIME_MANAGER_TOKEN: ${RUNTIME_MANAGER_TOKEN:?set RUNTIME_MANAGER_TOKEN in .env}
       RUNTIME_MEMORY_MB: 384
       RUNTIME_CPUS: "0.75"
     volumes:
@@ -40,14 +41,17 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vexhost}:${POSTGRES_PASSWORD:-vexhost}@db:5432/${POSTGRES_DB:-vexhost}
+      ENV: production
       CORS_ORIGINS: ${CORS_ORIGINS:-https://host.vexory.xyz}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
       DASHBOARD_URL: ${DASHBOARD_URL:-https://host.vexory.xyz/?view=dashboard}
       DEPLOY_ROOT: /data/deployments
       RUNTIME_HOST_DEPLOY_ROOT: /var/lib/docker/volumes/vexhost_deploy_data/_data
       RUNTIME_NETWORK: vexhost_default
       RUNTIME_MANAGER_URL: http://runtime-manager:8010
+      RUNTIME_MANAGER_TOKEN: ${RUNTIME_MANAGER_TOKEN:?set RUNTIME_MANAGER_TOKEN in .env}
     volumes:
       - deploy_data:/data/deployments
     depends_on:
@@ -93,6 +97,7 @@ services:
       RUNTIME_HOST_DEPLOY_ROOT: /var/lib/docker/volumes/vexhost_deploy_data/_data
       RUNTIME_NETWORK: vexhost_default
       RUNTIME_MANAGER_URL: http://runtime-manager:8010
+      RUNTIME_MANAGER_TOKEN: ${RUNTIME_MANAGER_TOKEN:?set RUNTIME_MANAGER_TOKEN in .env}
     volumes:
       - deploy_data:/data/deployments
     depends_on:
