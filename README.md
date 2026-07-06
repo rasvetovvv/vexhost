@@ -1,76 +1,119 @@
 <p align="center">
-  <img src="assets/icon.png" alt="VexHost icon" width="112" height="112">
+  <img src="assets/icon.png" alt="VexHost icon" width="116" height="116">
 </p>
 
 <h1 align="center">VexHost</h1>
 
 <p align="center">
-  Free beta hosting for websites, APIs, servers, and Telegram bots.
+  <strong>Public beta hosting for websites, APIs, Docker runtimes, Mini Apps, and Telegram bots.</strong>
 </p>
 
 <p align="center">
-  <a href="https://host.vexory.xyz/">Live Beta</a>
-  -
-  <a href="https://t.me/VexHostBot">Telegram Bot</a>
-  -
-  <a href="#quick-start">Quick Start</a>
+  Deploy from Telegram or the browser, manage files and secrets, watch logs and metrics, and publish to a live subdomain.
 </p>
 
 <p align="center">
-  <img alt="Beta" src="https://img.shields.io/badge/status-public%20beta-229ed9?style=for-the-badge">
-  <img alt="Active development" src="https://img.shields.io/badge/development-active-22c55e?style=for-the-badge">
-  <img alt="Docker" src="https://img.shields.io/badge/runtime-docker-111111?style=for-the-badge&logo=docker">
+  <a href="https://host.vexory.xyz/"><strong>Live Beta</strong></a>
+  &nbsp;/&nbsp;
+  <a href="https://t.me/VexHostBot"><strong>Telegram Bot</strong></a>
+  &nbsp;/&nbsp;
+  <a href="#quick-start"><strong>Quick Start</strong></a>
+  &nbsp;/&nbsp;
+  <a href="#screenshots"><strong>Screenshots</strong></a>
 </p>
 
-![VexHost preview](assets/preview.png)
+<p align="center">
+  <img alt="Status" src="https://img.shields.io/badge/status-public%20beta-229ed9?style=for-the-badge">
+  <img alt="Development" src="https://img.shields.io/badge/development-active-22c55e?style=for-the-badge">
+  <img alt="Stack" src="https://img.shields.io/badge/stack-React%20%2B%20FastAPI-111111?style=for-the-badge">
+  <img alt="Runtime" src="https://img.shields.io/badge/runtime-Docker-2496ed?style=for-the-badge&logo=docker&logoColor=white">
+</p>
 
-## Beta Notice
+![VexHost landing preview](assets/preview.png)
 
-VexHost is currently a beta project in active development. Some features are experimental, APIs and data models may change, and bugs or temporary downtime can happen. Use it for testing, early feedback, and small projects while the platform is being stabilized.
+> **Beta notice**
+>
+> VexHost is in active development. Features may change, bugs can happen, and the hosted beta may experience temporary downtime. The project is ready for testing, demos, and early feedback, but it is not yet a hardened multi-tenant production platform.
 
-## What Is VexHost?
+## Table Of Contents
 
-VexHost is a Telegram-first hosting platform for builders who want to publish projects quickly without setting up a full server workflow. It combines a web dashboard, Telegram bot access, Docker-based runtimes, live logs, file management, per-project environment variables, and basic monitoring in one lightweight stack.
+- [Overview](#overview)
+- [Screenshots](#screenshots)
+- [Highlights](#highlights)
+- [Latest Update](#latest-update)
+- [Tech Stack](#tech-stack)
+- [Architecture](#architecture)
+- [Quick Start](#quick-start)
+- [Environment](#environment)
+- [Services](#services)
+- [API Surface](#api-surface)
+- [Roadmap](#roadmap)
+- [Security Notes](#security-notes)
+
+## Overview
+
+VexHost is a Telegram-first hosting platform for builders who want to launch small projects quickly without managing server plumbing. It combines a public landing page, browser dashboard, Telegram bot access, Docker-based runtimes, live logs, file editing, per-project environment variables, and basic monitoring in one compact stack.
 
 Live beta: [https://host.vexory.xyz/](https://host.vexory.xyz/)
 
 ## Screenshots
 
-The README visuals are refreshed from the current beta UI.
-
-![VexHost environment variables manager](assets/env-manager-preview.png)
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Landing page</strong>
+      <br>
+      <img src="assets/preview.png" alt="VexHost landing page preview">
+    </td>
+    <td width="50%">
+      <strong>Environment variables manager</strong>
+      <br>
+      <img src="assets/env-manager-preview.png" alt="VexHost environment variables manager preview">
+    </td>
+  </tr>
+</table>
 
 ## Highlights
 
-- Deploy static sites, Node.js apps, Python apps, APIs, Telegram bots, and Mini Apps.
-- Manage projects from a browser dashboard or through `@VexHostBot`.
-- Run app workloads in isolated Docker containers.
-- Edit project files in the browser with a Monaco-powered editor.
-- Manage per-project `.env` variables from the dashboard with masked values and validation.
-- View deployment progress, runtime logs, CPU, RAM, disk, uptime, request, and error metrics.
-- Restart, stop, and inspect running projects from the dashboard.
-- Publish projects to generated `*.vexory.xyz` subdomains.
-- Use a separate admin dashboard for users, projects, abuse flags, and runtime operations.
+<table>
+  <tr>
+    <td><strong>Telegram-first flow</strong><br>Create access from <code>@VexHostBot</code> and manage the same projects from the browser dashboard.</td>
+    <td><strong>Real runtimes</strong><br>Run static sites, Node.js apps, Python apps, APIs, Mini Apps, and Telegram bots in Docker containers.</td>
+  </tr>
+  <tr>
+    <td><strong>Built-in file editor</strong><br>Upload files, create folders, edit code, and manage project workspaces directly in the UI.</td>
+    <td><strong>Secrets manager</strong><br>Edit per-project <code>.env</code> variables with masking, validation, duplicate-key checks, and automatic runtime restart.</td>
+  </tr>
+  <tr>
+    <td><strong>Logs and metrics</strong><br>Watch deploy steps, runtime logs, CPU, RAM, disk, uptime, requests, errors, and restart state.</td>
+    <td><strong>Admin console</strong><br>Review users, projects, queue state, abuse flags, and dangerous runtime actions behind explicit confirmation.</td>
+  </tr>
+</table>
 
-## Recent Update
+## Latest Update
 
-This version adds a dedicated Environment Variables Manager:
+This version focuses on safer runtime operations and project configuration.
 
-- `GET /api/projects/{project_id}/env` reads a project's `.env` file safely.
-- `POST /api/projects/{project_id}/env` atomically writes variables with restricted file permissions.
-- Runtime containers automatically restart when saved environment changes need to be applied.
-- The dashboard now includes an Env variables tab with masked values, add/edit/delete controls, duplicate-key checks, and multiline-value validation.
-- The runtime manager now requires a shared backend token for sensitive container operations.
-- Session signing now uses `AUTH_SECRET` in production instead of falling back to a predictable default.
+| Area | What changed |
+| --- | --- |
+| Environment variables | Added `GET /api/projects/{project_id}/env` and `POST /api/projects/{project_id}/env` for safe project `.env` management. |
+| Dashboard | Added an Env variables tab with masked values, add/edit/delete controls, duplicate-key checks, and multiline-value validation. |
+| Runtime apply | Saving env vars can automatically schedule a runtime restart so containers pick up changes. |
+| Runtime manager | Sensitive runtime-manager endpoints now require a shared backend token. |
+| Sessions | Production session signing now requires `AUTH_SECRET` instead of relying on a predictable fallback. |
+| Worker queue | Runtime-start jobs are kept out of the static deployment worker to avoid queue races. |
 
 ## Tech Stack
 
-- Frontend: React, Vite, Monaco Editor, Lucide icons, Nginx
-- Backend: FastAPI, SQLAlchemy async, Pydantic Settings
-- Database: PostgreSQL
-- Bot: aiogram
-- Runtime layer: Docker, runtime manager service, worker queue
-- Deployment: Docker Compose
+| Layer | Tools |
+| --- | --- |
+| Frontend | React, Vite, Monaco Editor, Lucide icons |
+| Web serving | Nginx |
+| Backend | FastAPI, SQLAlchemy async, Pydantic Settings |
+| Database | PostgreSQL |
+| Bot | aiogram |
+| Runtime layer | Docker, runtime manager service, worker queue |
+| Deployment | Docker Compose |
 
 ## Architecture
 
@@ -83,7 +126,7 @@ flowchart LR
   API --> DB[(PostgreSQL)]
   API --> Worker[Deployment worker]
   API --> Runtime[Runtime manager]
-  Runtime --> Docker[Docker containers]
+  Runtime --> Docker[Hosted Docker containers]
   Worker --> Deployments[Deployment volume]
   Docker --> Public[Public subdomains]
 ```
@@ -93,18 +136,29 @@ flowchart LR
 ### Requirements
 
 - Docker and Docker Compose
-- A Telegram bot token if you want Telegram login and bot features
-- A public reverse proxy/network if you want to expose it like the live beta
+- A Telegram bot token for Telegram login and bot features
+- A reverse proxy or public network if you want to expose it like the live beta
 
-### 1. Configure Environment
-
-Copy the example environment file:
+### 1. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Update values as needed:
+### 2. Start
+
+```bash
+docker compose up -d --build
+```
+
+### 3. Verify
+
+```bash
+curl http://127.0.0.1:8000/healthz
+curl https://host.vexory.xyz/healthz
+```
+
+## Environment
 
 ```env
 POSTGRES_USER=vexhost
@@ -120,31 +174,18 @@ RUNTIME_MANAGER_TOKEN=
 
 For production, set strong random values for `AUTH_SECRET` and `RUNTIME_MANAGER_TOKEN`.
 
-### 2. Start The Stack
-
-```bash
-docker compose up -d --build
-```
-
-### 3. Verify Services
-
-```bash
-curl http://127.0.0.1:8000/healthz
-curl https://host.vexory.xyz/healthz
-```
-
-## Main Services
+## Services
 
 | Service | Purpose |
 | --- | --- |
 | `web` | Builds the React app and serves it with Nginx. |
-| `backend` | Main FastAPI API for auth, dashboard, projects, deployments, and admin operations. |
+| `backend` | Main FastAPI API for auth, dashboard, projects, deployments, files, env vars, runtime controls, and admin actions. |
 | `worker` | Processes deployment jobs in the background. |
 | `bot` | Telegram bot entry point powered by aiogram. |
 | `runtime-manager` | Starts, stops, inspects, and manages hosted Docker runtimes. |
 | `db` | PostgreSQL database for users, projects, deployments, and waitlist data. |
 
-## Useful Endpoints
+## API Surface
 
 | Endpoint | Description |
 | --- | --- |
@@ -152,10 +193,10 @@ curl https://host.vexory.xyz/healthz
 | `GET /api/health` | API health alias. |
 | `GET /api/stats` | Basic platform statistics. |
 | `GET /api/templates` | Available starter templates. |
-| `GET /api/dashboard` | Authenticated user dashboard data. |
-| `GET /api/projects/{project_id}/env` | Authenticated project environment variables. |
+| `GET /api/dashboard` | Authenticated dashboard data. |
+| `GET /api/projects/{project_id}/env` | Read project environment variables. |
 | `POST /api/projects/{project_id}/env` | Save project environment variables and apply them to runtime containers. |
-| `GET /api/admin/summary` | Admin overview for users, projects, queues, and abuse flags. |
+| `GET /api/admin/summary` | Admin overview for users, projects, queues, runtime state, and abuse flags. |
 
 ## Project Structure
 
@@ -193,11 +234,11 @@ curl https://host.vexory.xyz/healthz
 - Add custom domains and TLS automation
 - Expand starter templates
 - Add stronger automated tests and CI checks
-- Improve documentation for self-hosting and production hardening
+- Improve self-hosting and production-hardening documentation
 
 ## Security Notes
 
-- Do not commit `.env` files or Telegram bot tokens.
+- Do not commit `.env` files, Telegram bot tokens, runtime tokens, or session secrets.
 - Set strong random values for `AUTH_SECRET` and `RUNTIME_MANAGER_TOKEN` before production use.
 - Review Docker socket access before production use.
 - Treat runtime execution as sensitive infrastructure.
